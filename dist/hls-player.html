@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>WilStream HLS Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+        video { width: 100%; height: 100%; display: block; object-fit: contain; }
+        #loading { position: absolute; color: white; font-family: sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="loading">Cargando Canal...</div>
+    <video id="video" controls autoplay playsinline></video>
+    <script>
+        const video = document.getElementById('video');
+        const loading = document.getElementById('loading');
+        const urlParams = new URLSearchParams(window.location.search);
+        const videoSrc = urlParams.get('url');
+
+        if (!videoSrc) {
+            loading.innerText = 'Error: No URL provided';
+        } else {
+            const playVideo = () => {
+                loading.style.display = 'none';
+                video.play().catch(() => {
+                    loading.innerText = 'Toca la pantalla para reproducir';
+                    loading.style.display = 'block';
+                });
+            };
+
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    capLevelToPlayerSize: true,
+                    autoStartLoad: true
+                });
+                hls.loadSource(videoSrc);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, playVideo);
+                hls.on(Hls.Events.ERROR, function (event, data) {
+                    if (data.fatal) {
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                hls.startLoad();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                loading.innerText = 'Error al cargar el canal';
+                                break;
+                        }
+                    }
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = videoSrc;
+                video.addEventListener('loadedmetadata', playVideo);
+            } else {
+                loading.innerText = 'Tu navegador no soporta este tipo de video';
+            }
+        }
+        
+        video.addEventListener('playing', () => {
+             loading.style.display = 'none';
+        });
+    </script>
+</body>
+</html>
