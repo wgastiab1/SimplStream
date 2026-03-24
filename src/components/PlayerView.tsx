@@ -6,7 +6,8 @@ import { saveWatchHistory as saveHistory, generateId, getWatchlist, addToWatchli
 import { useTheme } from '../context/ThemeContext';
 import { useTranslation } from '../context/LanguageContext';
 import { LIVE_CHANNELS } from '../lib/liveChannels';
-
+import { wrapIframeContent, shouldBlockAds } from '../lib/ad-blocker';
+import { CONFIG } from '../config';
 
 interface PlayerViewProps {
   profile: Profile;
@@ -38,20 +39,11 @@ export function PlayerView({
   const [currentSeason, setCurrentSeason] = useState(season);
   const [currentEpisode, setCurrentEpisode] = useState(episode);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
-  const [server, setServer] = useState<'vidsrc' | 'vidlink' | '111movies' | 'videasy' | 'vidfast' | 'fede' | 'wolfstream'>('vidsrc');
+  const [server, setServer] = useState<'vidsrc' | 'vidlink' | '111movies' | 'videasy' | 'vidfast' | 'vidnest'>('vidsrc');
   const [playerUrl, setPlayerUrl] = useState('');
-  const [playerActivated, setPlayerActivated] = useState(false);
-  const reactivateTimerRef = { current: null as any };
+  const [isPlayerLoading, setIsPlayerLoading] = useState(false);
   const [watchlist, setWatchlist] = useState<string[]>([]);
 
-  function handleActivatePlayer() {
-    setPlayerActivated(true);
-    if (reactivateTimerRef.current) clearTimeout(reactivateTimerRef.current);
-    // Re-show the overlay after 2.5 seconds so the next pause/click is also protected
-    reactivateTimerRef.current = setTimeout(() => {
-      setPlayerActivated(false);
-    }, 2500);
-  }
   const { effectiveTheme } = useTheme();
   const { t, language } = useTranslation();
 
@@ -118,7 +110,6 @@ export function PlayerView({
     if (mediaType === 'tv') {
       loadEpisodes();
     }
-    setPlayerActivated(false);
     updatePlayerUrl();
   }, [currentSeason, currentEpisode, server]);
 
@@ -212,12 +203,38 @@ export function PlayerView({
   }
 
 
-  function updatePlayerUrl() {
+  async function updatePlayerUrl() {
     if (mediaType === 'live' && embedUrl) {
       setPlayerUrl(embedUrl);
     } else {
-      const url = (EMBED_PROVIDERS as any)[server](mediaType, tmdbId, currentSeason, currentEpisode, language);
-      setPlayerUrl(url);
+      setIsPlayerLoading(true);
+      let finalUrl = (EMBED_PROVIDERS as any)[server](mediaType, tmdbId, currentSeason, currentEpisode, language);
+      
+      // Try to use the backend cleaner if we are using vidnest and backend is running
+      if (server === 'vidnest') {
+        try {
+          const backendPath = mediaType === 'movie' 
+            ? `/api/embed/vidnest/movie/${tmdbId}`
+            : `/api/embed/vidnest/tv/${tmdbId}?season=${currentSeason}&episode=${currentEpisode}`;
+          
+          const res = await fetch(`${CONFIG.BACKEND_URL}${backendPath}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.video_url) {
+              finalUrl = data.video_url;
+            }
+          }
+        } catch (error) {
+          console.warn('[WilStream] Backend embed cleaner failed, falling back to direct URL', error);
+        }
+      }
+
+      // Apply Brave-style ad blocking if enabled (skip for live TV)
+      const wrappedUrl = shouldBlockAds(profile, mediaType)
+        ? wrapIframeContent(finalUrl)
+        : finalUrl;
+      setPlayerUrl(wrappedUrl);
+      setIsPlayerLoading(false);
     }
   }
 
@@ -320,8 +337,7 @@ export function PlayerView({
                 >
                   <option value="vidsrc">Vidsrc (Global 🌎)</option>
                   <option value="vidlink">Vidlink (Global 🌎)</option>
-                  <option value="fede">Fede (Español/Latino 🇪🇸🇲🇽)</option>
-                  <option value="wolfstream">WolfStream (Latino 🇲🇽)</option>
+                  <option value="vidnest">VidNest (Latino 🇨🇴)</option>
                   <option value="111movies">111Movies (EN 🇺🇸)</option>
                   <option value="videasy">Videasy (Global 🌎)</option>
                   <option value="vidfast">Vidfast (Global 🌎)</option>
@@ -370,20 +386,14 @@ export function PlayerView({
                 style={{ border: 0 }}
                 allowFullScreen
                 title="Video Player"
-                sandbox={profile.safe_mode ? "allow-forms allow-scripts allow-same-origin allow-presentation" : undefined}
+                // When ad blocking is enabled, we need scripts to inject the ad blocker
+                // Safe mode + ad blocking both need scripts for their functionality
+                sandbox={profile.safe_mode || shouldBlockAds(profile, mediaType) ? "allow-forms allow-scripts allow-same-origin allow-presentation" : undefined}
               />
-              {/* Click-guard overlay: intercepts each tap, blocks popup, then lets user control the player for 2.5s */}
-              {!playerActivated && (
-                <div
-                  className="absolute inset-0 z-10 cursor-pointer flex items-center justify-center"
-                  style={{ background: 'transparent' }}
-                  onClick={handleActivatePlayer}
-                  title="Toca para interactuar con el reproductor"
-                >
-                  <div className="bg-black/50 backdrop-blur-sm rounded-full px-6 py-3 flex items-center gap-3 pointer-events-none select-none border border-white/20">
-                    <div className="w-0 h-0 border-t-[10px] border-t-transparent border-l-[18px] border-l-white border-b-[10px] border-b-transparent" />
-                    <span className="text-white text-sm font-medium">Toca para interactuar</span>
-                  </div>
+              {isPlayerLoading && (
+                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm">
+                  <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+                  <p className="text-white font-medium">Buscando el mejor servidor...</p>
                 </div>
               )}
             </div>

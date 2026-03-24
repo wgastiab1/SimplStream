@@ -3,3 +3,5 @@ uvicorn
 requests
 python-dotenv
 mangum
+playwright
+beautifulsoup4

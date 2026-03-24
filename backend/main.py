@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
-from routers import media_routes
+from routers import media_routes, embed_routes
 
 app = FastAPI(
     title="WilStream API",
@@ -33,3 +33,4 @@ async def root():
     }
 
 app.include_router(media_routes.router)
+app.include_router(embed_routes.router)

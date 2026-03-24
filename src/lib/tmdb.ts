@@ -87,14 +87,9 @@ export const EMBED_PROVIDERS = {
     if (type === 'tv') return `https://vidfast.pro/tv/${tmdbId}/${season}/${episode}?theme=2980B9&autoPlay=true&nextButton=true`;
     return '';
   },
-  fede: (type: string, tmdbId: number, season?: number, episode?: number) => {
-    if (type === 'movie') return `https://fede.stream/embed/movie/${tmdbId}`;
-    if (type === 'tv') return `https://fede.stream/embed/tv/${tmdbId}/${season}/${episode}`;
-    return '';
-  },
-  wolfstream: (type: string, tmdbId: number, season?: number, episode?: number) => {
-    if (type === 'movie') return `https://wolf-stream.com/embed/movie/${tmdbId}`;
-    if (type === 'tv') return `https://wolf-stream.com/embed/tv/${tmdbId}/${season}/${episode}`;
+  vidnest: (type: string, tmdbId: number, season?: number, episode?: number) => {
+    if (type === 'movie') return `https://vidnest.fun/movie/${tmdbId}`;
+    if (type === 'tv') return `https://vidnest.fun/tv/${tmdbId}/${season}/${episode}`;
     return '';
   }
 };
