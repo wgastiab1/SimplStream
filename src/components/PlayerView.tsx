@@ -6,7 +6,7 @@ import { saveWatchHistory as saveHistory, generateId, getWatchlist, addToWatchli
 import { useTheme } from '../context/ThemeContext';
 import { useTranslation } from '../context/LanguageContext';
 import { LIVE_CHANNELS } from '../lib/liveChannels';
-import { wrapIframeContent, shouldBlockAds } from '../lib/ad-blocker';
+import { createInjectedIframeContent, shouldBlockAds } from '../lib/ad-blocker';
 import { CONFIG } from '../config';
 
 interface PlayerViewProps {
@@ -231,7 +231,7 @@ export function PlayerView({
 
       // Apply Brave-style ad blocking if enabled (skip for live TV)
       const wrappedUrl = shouldBlockAds(profile, mediaType)
-        ? wrapIframeContent(finalUrl)
+        ? createInjectedIframeContent(finalUrl)
         : finalUrl;
       setPlayerUrl(wrappedUrl);
       setIsPlayerLoading(false);
@@ -385,11 +385,31 @@ export function PlayerView({
                 height="100%"
                 style={{ border: 0 }}
                 allowFullScreen
-                title="Video Player"
                 // When ad blocking is enabled, we need scripts to inject the ad blocker
                 // Safe mode + ad blocking both need scripts for their functionality
-                sandbox={profile.safe_mode || shouldBlockAds(profile, mediaType) ? "allow-forms allow-scripts allow-same-origin allow-presentation" : undefined}
+                sandbox={profile.safe_mode || shouldBlockAds(profile, mediaType) ? "allow-forms allow-scripts allow-same-origin allow-presentation allow-popups" : undefined}
               />
+              {/* Smart click guard: absorbs the invisible ad layers from the iframe but allows bottom controls to be clicked */}
+              {shouldBlockAds(profile, mediaType) && typeof window !== 'undefined' && (
+                <div 
+                  className="absolute inset-x-0 top-0 h-[80%] z-10 cursor-pointer"
+                  onClick={(e) => {
+                    const target = e.currentTarget;
+                    // Prevent the ad network's invisible div inside the iframe from receiving this first click
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Briefly flash white to indicate the ad was blocked
+                    target.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+                    setTimeout(() => { target.style.backgroundColor = 'transparent'; }, 200);
+                    // Disable the guard for 5 seconds to let the user double-tap or interact with the player center
+                    target.style.pointerEvents = 'none';
+                    setTimeout(() => {
+                      if (target) target.style.pointerEvents = 'auto';
+                    }, 5000);
+                  }}
+                  title="WilStream Escudo Activo: Toca para interactuar de forma segura"
+                />
+              )}
               {isPlayerLoading && (
                 <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm">
                   <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />

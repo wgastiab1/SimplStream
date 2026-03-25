@@ -83,26 +83,34 @@ function getAdBlockerJS(): string {
     (function() {
       'use strict';
 
-      // Block window.open calls
+      // Aggressively block ALL window.open calls. A video player NEVER needs to open a popup.
       const originalOpen = window.open;
-      window.open = function(url, ...args) {
-        if (!url || url === '' || url === 'about:blank') {
-          return originalOpen.apply(window, [url, ...args]);
-        }
-        try {
-          const parsed = new URL(url, location.href);
-          const hostname = parsed.hostname.toLowerCase();
-          const blockedPatterns = ${JSON.stringify(blockedDomains)};
-          const isBlocked = blockedPatterns.some(function(d) {
-            return hostname.includes(d.toLowerCase());
-          });
-          if (isBlocked) {
-            console.warn('[WilStream AdBlock] Blocked popup:', url);
-            return null;
-          }
-        } catch(e) {}
-        return originalOpen.apply(window, [url, ...args]);
+      window.open = function() {
+        console.warn('[WilStream AdBlock] Blocked popup attempt via window.open');
+        return null;
       };
+
+      // Intercept all clicks to prevent target="_blank" links and invisible overlays
+      document.addEventListener('click', function(e) {
+        let node = e.target;
+        while (node && node !== document.body) {
+          if (node.tagName === 'A' && (node.getAttribute('target') === '_blank' || node.href.includes('redirect'))) {
+            console.warn('[WilStream AdBlock] Blocked target=_blank link click.');
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+          }
+          // Remove obvious invisible ad overlays on click
+          if (node.tagName === 'DIV' && node.offsetHeight > window.innerHeight * 0.8 && window.getComputedStyle(node).opacity < 0.1) {
+             console.warn('[WilStream AdBlock] Removed transparent overlay.');
+             e.preventDefault();
+             e.stopPropagation();
+             node.remove();
+             return false;
+          }
+          node = node.parentElement;
+        }
+      }, true); // use capture phase to intercept before React or other listeners
 
       // Block navigation/redirection attempts
       const originalAssign = window.location.assign;
@@ -318,21 +326,23 @@ export function createInjectedIframeContent(originalUrl: string): string {
   const css = getAdBlockerCSS();
   const js = getAdBlockerJS();
 
-  return `<!DOCTYPE html>
+  const wrapperHTML = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <style>${css}</style>
 </head>
-<body>
+<body style="margin:0;padding:0;overflow:hidden;background-color:black;">
   <script>${js}</script>
   <iframe
     src="${originalUrl.replace(/"/g, '&quot;')}"
-    style="width:100%;height:100%;border:none;position:absolute;top:0;left:0;"
-    sandbox="allow-forms allow-scripts allow-same-origin allow-presentation allow-forms allow-scripts allow-pointer-lock allow-same-origin allow-top-navigation"
+    style="width:100%;height:100vh;border:none;position:absolute;top:0;left:0;margin:0;padding:0;"
+    allowfullscreen
   ></iframe>
 </body>
 </html>`;
+
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(wrapperHTML);
 }
 
 /**

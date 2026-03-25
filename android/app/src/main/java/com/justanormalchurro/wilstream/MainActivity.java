@@ -44,6 +44,14 @@ public class MainActivity extends BridgeActivity {
         "pornhub.net", "traffic-media.co", "trafficback.com"
     ));
 
+    // We ONLY allow navigation to core app services.
+    // Streaming provider domains ARE REMOVED from the allowlist so that if their iframe attempts
+    // to navigate to an internal ad (e.g. vidsrc.xyz/ad), it is aggressively blocked!
+    private static final Set<String> ALLOWLIST = new HashSet<>(Arrays.asList(
+        "localhost", "youtube.com", "themoviedb.org", "tmdb.org",
+        "wilstream.vercel.app"
+    ));
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -54,6 +62,12 @@ public class MainActivity extends BridgeActivity {
 
     private void setupAdBlocker() {
         WebView webView = this.bridge.getWebView();
+        
+        // This is THE magic bullet against target="_blank" and window.open popups
+        // If false, Android WebView forces all popup attempts to load in the current frame,
+        // which then immediately triggers our shouldOverrideUrlLoading ALLOWLIST and gets blocked!
+        webView.getSettings().setSupportMultipleWindows(false);
+        webView.getSettings().setJavaScriptCanOpenWindowsAutomatically(false);
 
         webView.setWebViewClient(new BridgeWebViewClient(this.bridge) {
             @Override
@@ -72,9 +86,37 @@ public class MainActivity extends BridgeActivity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                // Block navigation to known ad/popup domains
-                if (request != null && request.getUrl() != null) {
-                    String url = request.getUrl().toString();
+                if (isAdBlockEnabled && request != null && request.getUrl() != null) {
+                    String url = request.getUrl().toString().toLowerCase();
+                    String host = request.getUrl().getHost();
+                    
+                    // Explicitly block ad networks trying to open other apps or the Play Store
+                    if (url.startsWith("intent:") || url.startsWith("market:") || url.startsWith("whatsapp:") || url.startsWith("telegram:") || url.startsWith("viber:")) {
+                        return true; // Block!
+                    }
+                    
+                    if (host != null) {
+                        host = host.toLowerCase();
+                        boolean isAllowed = false;
+                        
+                        // Checking basic allowlist domains
+                        for (String allowed : ALLOWLIST) {
+                            if (host.contains(allowed.toLowerCase())) {
+                                isAllowed = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!isAllowed) {
+                            // If the domain is not recognized as our app or our video partners, it's a popup! Block it!
+                            return true; 
+                        }
+                    } else if (!url.startsWith("http") && !url.startsWith("capacitor") && !url.startsWith("blob")) {
+                        // Not a standard URL scheme and not an intent/market? Block it to be safe
+                        return true;
+                    }
+                    
+                    // Also check blacklist just in case it slipped through
                     for (String domain : BLACKLIST) {
                         if (url.contains(domain)) {
                             return true; // Block navigation
