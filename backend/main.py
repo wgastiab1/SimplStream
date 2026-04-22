@@ -1,7 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import os
-from routers import media_routes, embed_routes
+import logging
+from routers import media_routes, embed_routes, shield_proxy
+
+# Configure Logging to be more visible
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("WilStream")
 
 app = FastAPI(
     title="WilStream API",
@@ -31,6 +35,7 @@ async def root():
         "message": "WilStream Backend is operational",
         "version": "1.0.0"
     }
-
+# Include routers
 app.include_router(media_routes.router)
 app.include_router(embed_routes.router)
+app.include_router(shield_proxy.router, prefix="/api/proxy")

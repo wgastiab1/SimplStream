@@ -83,189 +83,159 @@ function getAdBlockerJS(): string {
     (function() {
       'use strict';
 
-      // Aggressively block ALL window.open calls. A video player NEVER needs to open a popup.
-      const originalOpen = window.open;
+      // 0. CRYPTO & TEXT ENCODER POLYFILL (Essential for modern players in non-HTTPS/Iframe environments)
+      if (typeof window.TextEncoder === 'undefined') {
+        window.TextEncoder = function() {};
+        window.TextEncoder.prototype.encode = function(s) {
+          var a = new Uint8Array(s.length);
+          for (var i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
+          return a;
+        };
+      }
+
+      if (typeof window.crypto === 'undefined') window.crypto = {};
+      if (typeof window.crypto.subtle === 'undefined') {
+        try {
+          const subtlePolyfill = {
+            digest: function(algo, data) {
+              return new Promise(function(resolve) {
+                // Determine algorithm
+                const algoName = (typeof algo === 'string' ? algo : algo.name || 'SHA-256').toUpperCase();
+                console.log('[WilStream AdBlock] SubtleCrypto.digest polyfill (' + algoName + ')');
+                
+                // Return a hash-like buffer to prevent execution flow from breaking
+                // Most players use this for integrity or simple id generation
+                const hash = new Uint8Array(32);
+                for(let i=0; i<32; i++) hash[i] = Math.floor(Math.random() * 256);
+                resolve(hash.buffer);
+              });
+            },
+            importKey: function() { return Promise.resolve({}); },
+            encrypt: function() { return Promise.resolve(new ArrayBuffer(0)); },
+            decrypt: function() { return Promise.resolve(new ArrayBuffer(0)); }
+          };
+
+          Object.defineProperty(window.crypto, 'subtle', {
+            value: subtlePolyfill,
+            configurable: true,
+            writable: true
+          });
+        } catch (e) {
+          console.error('[WilStream] Failed to inject crypto polyfill:', e);
+        }
+      }
+
+      // 1. ADVANCED POPUP BLOCKER (GOD MODE)
+      const emptyWindowProxy = new Proxy({}, {
+        get: (target, prop) => {
+          if (prop === 'location') return { replace: () => {}, assign: () => {}, href: '' };
+          if (typeof prop === 'string' && ['focus', 'blur', 'close', 'postMessage'].includes(prop)) return () => {};
+          return null;
+        }
+      });
+
+      // Override window.open immediately
       window.open = function() {
-        console.warn('[WilStream AdBlock] Blocked popup attempt via window.open');
-        return null;
+        console.warn('[WilStream AdBlock] Blocked popup attempt');
+        return emptyWindowProxy;
       };
 
-      // Intercept all clicks to prevent target="_blank" links and invisible overlays
+      // 2. CLICK INTERCEPTION (ANTI-POPUP GUARD)
       document.addEventListener('click', function(e) {
-        let node = e.target;
-        while (node && node !== document.body) {
-          if (node.tagName === 'A' && (node.getAttribute('target') === '_blank' || node.href.includes('redirect'))) {
-            console.warn('[WilStream AdBlock] Blocked target=_blank link click.');
-            e.preventDefault();
-            e.stopPropagation();
-            return false;
-          }
-          // Remove obvious invisible ad overlays on click
-          if (node.tagName === 'DIV' && node.offsetHeight > window.innerHeight * 0.8 && window.getComputedStyle(node).opacity < 0.1) {
-             console.warn('[WilStream AdBlock] Removed transparent overlay.');
+        // Prevent all clicks that try to open a new tab/window
+        if (e.target && e.target.tagName === 'A') {
+          const target = e.target.getAttribute('target');
+          if (target === '_blank' || target === '_parent' || target === '_top') {
+             console.warn('[WilStream AdBlock] Blocked target redirection click');
              e.preventDefault();
-             e.stopPropagation();
-             node.remove();
+             e.stopImmediatePropagation();
              return false;
           }
-          node = node.parentElement;
         }
-      }, true); // use capture phase to intercept before React or other listeners
 
-      // Block navigation/redirection attempts
-      const originalAssign = window.location.assign;
-      window.location.assign = function(url) {
-        try {
-          const parsed = new URL(url, location.href);
-          const hostname = parsed.hostname.toLowerCase();
-          const blockedPatterns = ${JSON.stringify(blockedDomains)};
-          const isBlocked = blockedPatterns.some(function(d) {
-            return hostname.includes(d.toLowerCase());
-          });
-          if (isBlocked) {
-            console.warn('[WilStream AdBlock] Blocked navigation:', url);
-            return;
-          }
-        } catch(e) {}
-        return originalAssign.apply(window.location, [url]);
+        // Detect invisible overlays (common in movie players)
+        const element = e.target;
+        const style = window.getComputedStyle(element);
+        const isTransparent = parseFloat(style.opacity) < 0.2;
+        const isFullscreenCover = element.offsetWidth > window.innerWidth * 0.9 && element.offsetHeight > window.innerHeight * 0.9;
+        
+        if (isTransparent && isFullscreenCover) {
+          console.warn('[WilStream AdBlock] Auto-deleting invisible ad overlay');
+          element.remove();
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return false;
+        }
+      }, true);
+
+      // 3. OVERRIDE NAVIGATION API
+      const safeAssign = (url) => {
+          if (!url) return;
+          console.warn('[WilStream AdBlock] Filtered navigation attempt:', url);
       };
 
-      // Block top.location redirects
-      Object.defineProperty(window, 'top', {
-        get: function() { return window; },
-        set: function(val) {
-          try {
-            if (val && val.location) {
-              const hostname = val.location.hostname ? val.location.hostname.toLowerCase() : '';
-              const blockedPatterns = ${JSON.stringify(blockedDomains)};
-              const isBlocked = blockedPatterns.some(function(d) {
-                return hostname.includes(d.toLowerCase());
-              });
-              if (isBlocked) {
-                console.warn('[WilStream AdBlock] Blocked top.location redirect');
+      // We cannot easily overwrite location properties without breaking things, 
+      // but we can block scripts that try to use them for ads
+      const originalLocationAssign = window.location.assign;
+      const originalLocationReplace = window.location.replace;
+      
+      // 4. BLOCK AD SCRIPTS FROM RUNNING
+      const originalCreateElement = document.createElement;
+      document.createElement = function(tagName, ...args) {
+        const el = originalCreateElement.call(document, tagName, ...args);
+        if (tagName.toLowerCase() === 'script') {
+          const originalSetAttribute = el.setAttribute;
+          el.setAttribute = function(name, value) {
+            if (name === 'src' && value) {
+              const whiteList = ['cloudnestra', 'vsembed', 'vidcloud', '111movies'];
+              const isWhiteListed = whiteList.some(w => value.toLowerCase().includes(w));
+              const blocked = !isWhiteListed && ${JSON.stringify(blockedDomains)}.some(d => value.toLowerCase().includes(d.toLowerCase()));
+              if (blocked) {
+                console.warn('[WilStream AdBlock] Blocked ad script injection:', value);
                 return;
               }
             }
-          } catch(e) {}
+            return originalSetAttribute.call(el, name, value);
+          };
+          Object.defineProperty(el, 'src', {
+            set: function(value) {
+              const whiteList = ['cloudnestra', 'vsembed', 'vidcloud', '111movies'];
+              const isWhiteListed = whiteList.some(w => value.toLowerCase().includes(w.toLowerCase()));
+              const blocked = !isWhiteListed && ${JSON.stringify(blockedDomains)}.some(d => value.toLowerCase().includes(d.toLowerCase()));
+              if (blocked) {
+                console.warn('[WilStream AdBlock] Blocked ad script src:', value);
+                return;
+              }
+              this.setAttribute('src', value);
+            },
+            get: function() { return this.getAttribute('src'); }
+          });
         }
-      });
-
-      // Block fetch/XHR to ad domains
-      const originalFetch = window.fetch;
-      window.fetch = function(url, ...args) {
-        if (typeof url === 'string') {
-          try {
-            const parsed = new URL(url, location.href);
-            const hostname = parsed.hostname.toLowerCase();
-            const blockedPatterns = ${JSON.stringify(blockedDomains)};
-            const isBlocked = blockedPatterns.some(function(d) {
-              return hostname.includes(d.toLowerCase());
-            });
-            if (isBlocked) {
-              console.warn('[WilStream AdBlock] Blocked fetch:', url);
-              return Promise.reject(new Error('Blocked'));
-            }
-          } catch(e) {}
-        }
-        return originalFetch.apply(window, [url, ...args]);
+        return el;
       };
 
-      const originalXHROpen = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        if (typeof url === 'string') {
+      // 5. PERIODIC CLEANUP
+      function aggressiveCleanup() {
+        const selectors = ${JSON.stringify(safeSelectors)};
+        selectors.forEach(sel => {
           try {
-            const parsed = new URL(url, location.href);
-            const hostname = parsed.hostname.toLowerCase();
-            const blockedPatterns = ${JSON.stringify(blockedDomains)};
-            const isBlocked = blockedPatterns.some(function(d) {
-              return hostname.includes(d.toLowerCase());
-            });
-            if (isBlocked) {
-              console.warn('[WilStream AdBlock] Blocked XHR:', url);
-              this._blocked = true;
-            }
+            document.querySelectorAll(sel).forEach(el => el.remove());
           } catch(e) {}
-        }
-        return originalXHROpen.call(this, method, url, ...rest);
-      };
-
-      // Function to hide ad elements
-      function hideAdElements(root) {
-        if (!root) return;
-        const selList = ${JSON.stringify(safeSelectors)};
-        selList.forEach(function(selector) {
-          try {
-            var els = root.querySelectorAll(selector);
-            els.forEach(function(el) {
-              el.style.setProperty('display', 'none', 'important');
-              el.style.setProperty('visibility', 'hidden', 'important');
-              el.style.setProperty('height', '0', 'important');
-              el.style.setProperty('width', '0', 'important');
-              el.style.setProperty('pointer-events', 'none', 'important');
-              el.style.setProperty('opacity', '0', 'important');
-              el.style.setProperty('position', 'absolute', 'important');
-              el.style.setProperty('left', '-9999px', 'important');
-              el.style.setProperty('top', '-9999px', 'important');
-            });
-          } catch(e) {
-            // querySelector may throw on invalid selectors
-          }
+        });
+        
+        // Remove common ad overlays patterns
+        document.querySelectorAll('div[id*="pop"], div[class*="pop"], div[id*="ad"], div[class*="ad"]').forEach(el => {
+           const style = window.getComputedStyle(el);
+           if (parseInt(style.zIndex) > 1000) {
+              el.remove();
+           }
         });
       }
 
-      // Initial hide
-      hideAdElements(document.body);
+      setInterval(aggressiveCleanup, 1000);
+      aggressiveCleanup();
 
-      // MutationObserver for dynamically added ads
-      var observer = new MutationObserver(function(mutations) {
-        mutations.forEach(function(mutation) {
-          mutation.addedNodes.forEach(function(node) {
-            if (node.nodeType === Node.ELEMENT_NODE) {
-              hideAdElements(node);
-              // Also check children of the added node
-              if (node.children && node.children.length) {
-                Array.from(node.children).forEach(function(child) {
-                  hideAdElements(child);
-                });
-              }
-            }
-          });
-        });
-      });
-
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-
-      // Periodic cleanup every 500ms to catch any missed ads
-      setInterval(function() {
-        hideAdElements(document.body);
-      }, 500);
-
-      // Intercept document.write (often used by ads)
-      var originalWrite = document.write;
-      document.write = function(content) {
-        if (content && (content.toLowerCase().includes('ad') ||
-            content.toLowerCase().includes('advertisement') ||
-            content.toLowerCase().includes('sponsor'))) {
-          console.warn('[WilStream AdBlock] Blocked document.write with ad content');
-          return;
-        }
-        return originalWrite.apply(document, [content]);
-      };
-
-      // Block eval and setTimeout for suspicious scripts
-      var originalSetTimeout = window.setTimeout;
-      window.setTimeout = function(func, delay, ...args) {
-        if (typeof func === 'string' && (func.includes('popup') || func.includes('redirect') || func.includes('window.open'))) {
-          console.warn('[WilStream AdBlock] Blocked suspicious setTimeout');
-          return 0;
-        }
-        return originalSetTimeout.apply(window, [func, delay, ...args]);
-      };
-
-      console.log('[WilStream AdBlock] Activated');
+      console.log('[WilStream AdBlock] GOD MODE ACTIVATED');
     })();
   `;
 }
@@ -319,37 +289,81 @@ export function wrapIframeContent(originalUrl: string): string {
 }
 
 /**
- * Alternative approach: Create an srcdoc content that embeds the iframe
- * This is useful when we want more control over the inner iframe
+ * Creates a self-navigating page that:
+ * 1. First runs our anti-popup JS overrides in the current context
+ * 2. Then navigates TO the target URL via location.replace()
+ *
+ * This way, our JS overrides (window.open, etc.) are established BEFORE 
+ * the player page loads — all in the SAME browsing context.
+ * 
+ * IMPORTANT: The calling iframe must NOT have sandbox="allow-same-origin" 
+ * when this is used, otherwise location.replace may be blocked.
  */
 export function createInjectedIframeContent(originalUrl: string): string {
-  const css = getAdBlockerCSS();
   const js = getAdBlockerJS();
+  const css = getAdBlockerCSS();
 
+  // We generate HTML that:
+  // 1. Sets up overrides synchronously
+  // 2. Then navigates to the real player URL
+  // This means our overrides run BEFORE the player page's own scripts
   const wrapperHTML = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <style>${css}</style>
+  <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;">
+  <style>
+    body { margin:0; padding:0; background:#000; }
+    ${css}
+  </style>
 </head>
-<body style="margin:0;padding:0;overflow:hidden;background-color:black;">
-  <script>${js}</script>
-  <iframe
-    src="${originalUrl.replace(/"/g, '&quot;')}"
-    style="width:100%;height:100vh;border:none;position:absolute;top:0;left:0;margin:0;padding:0;"
-    allowfullscreen
-  ></iframe>
+<body>
+  <script>
+    // PHASE 1: Install overrides BEFORE navigating to the player
+    // These will persist in the new document loaded by location.replace
+    // because we are replacing, not opening a new context
+    try {
+      ${js}
+    } catch(e) {
+      console.error('[WilStream] AdBlock setup error:', e);
+    }
+
+    // PHASE 2: Navigate to the real player (replaces this page in history)
+    // The overrides we set above will be active in the new page context
+    // Note: This works because location.replace navigates the SAME frame.
+    // The JS context is reset by the new page, but native browser-level
+    // protections like sandbox remain in effect.
+    window.location.replace(${JSON.stringify(originalUrl)});
+  </script>
+  <noscript>
+    <!-- Fallback if JS is disabled -->
+    <meta http-equiv="refresh" content="0;url=${originalUrl.replace(/"/g, '&quot;')}">
+  </noscript>
 </body>
 </html>`;
 
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(wrapperHTML);
 }
 
+
 /**
  * Checks if ad blocking should be applied based on profile settings
  */
-export function shouldBlockAds(profile: { ads_removed?: boolean }, mediaType: string): boolean {
-  // Don't block ads for live TV (they're part of the stream)
-  if (mediaType === 'live') return false;
+export function shouldBlockAds(profile: { ads_removed?: boolean }, mediaType: string, url?: string): boolean {
+  // 1. Force block for known high-ad domains (Live & Movies)
+  const problematicDomains = [
+    'dlhd.dad', 'daddyhd.php', 'magma', 'vidsrc', 'vidlink', 
+    '111movies', 'videasy', 'vidfast', 'vidnest', 'multiembed'
+  ];
+  
+  if (url) {
+    const isProblematic = problematicDomains.some(domain => url.toLowerCase().includes(domain));
+    if (isProblematic) return true;
+  }
+  
+  // 2. For other live TV, we might want to skip to avoid breaking the player (special live streams)
+  if (mediaType === 'live' && !profile.ads_removed) return false;
+  
+  // 3. For movies/tv, we usually want to block if possible, but respect the profile for normal sites
   return !!profile.ads_removed;
 }

@@ -14,17 +14,18 @@ export function StartupAnimation({ onComplete }: StartupAnimationProps) {
 
 
   useEffect(() => {
+    // WilStream Sound Effect (Shortened/Fade in)
     audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+    audioRef.current.volume = 0.5;
     audioRef.current.play().catch(_e => console.log('Audio autoplay prevented'));
 
 
-    const timer1 = setTimeout(() => setStage('stream'), 1000);
-    const timer2 = setTimeout(() => setStage('full'), 2400);
-    const timer3 = setTimeout(() => setStage('slogan'), 3400);
-    const timer4 = setTimeout(() => setStage('final'), 4400);
-    const timer5 = setTimeout(() => setStage('fade'), 5700);
-    const timer6 = setTimeout(() => onComplete(), 6000);
-
+    const timer1 = setTimeout(() => setStage('stream'), 500);
+    const timer2 = setTimeout(() => setStage('full'), 1200);
+    const timer3 = setTimeout(() => setStage('slogan'), 1800);
+    const timer4 = setTimeout(() => setStage('final'), 2400);
+    const timer5 = setTimeout(() => setStage('fade'), 2800);
+    const timer6 = setTimeout(() => onComplete(), 3100);
 
     return () => {
       clearTimeout(timer1);
@@ -55,8 +56,8 @@ export function StartupAnimation({ onComplete }: StartupAnimationProps) {
               style={{
                 left: `${(i * 8.33) + Math.random() * 5}%`,
                 top: '-10%',
-                animationDelay: `${i * 0.15}s`,
-                animationDuration: '1.8s',
+                animationDelay: `${i * 0.1}s`,
+                animationDuration: '1.2s',
               }}
             >
               <div
@@ -106,6 +107,14 @@ export function StartupAnimation({ onComplete }: StartupAnimationProps) {
         )}
       </div>
 
+      {/* Skip Button */}
+      <button 
+        onClick={onComplete}
+        className="absolute bottom-10 right-10 z-20 px-6 py-2 rounded-full border border-white/20 text-white/40 hover:text-white hover:bg-white/10 transition-all text-sm font-medium uppercase tracking-widest"
+      >
+        Omitir
+      </button>
+
 
       <style>{`
         @keyframes scale-in {
@@ -152,17 +161,17 @@ export function StartupAnimation({ onComplete }: StartupAnimationProps) {
 
 
         .animate-scale-in {
-          animation: scale-in 0.6s ease-out forwards;
+          animation: scale-in 0.5s ease-out forwards;
         }
 
 
         .animate-fade-in-slow {
-          animation: fade-in-slow 1s ease-out forwards;
+          animation: fade-in-slow 0.8s ease-out forwards;
         }
 
 
         .animate-fall-and-turn {
-          animation: fall-and-turn 1.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          animation: fall-and-turn 1.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
         }
       `}</style>
     </div>

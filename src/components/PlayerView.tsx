@@ -8,6 +8,7 @@ import { useTranslation } from '../context/LanguageContext';
 import { LIVE_CHANNELS } from '../lib/liveChannels';
 import { createInjectedIframeContent, shouldBlockAds } from '../lib/ad-blocker';
 import { CONFIG } from '../config';
+import { isHlsStream } from '../lib/hlsUtils';
 
 interface PlayerViewProps {
   profile: Profile;
@@ -20,6 +21,7 @@ interface PlayerViewProps {
   onBack: () => void;
   onPlay: (tmdbId: number, mediaType: 'movie' | 'tv' | 'live', season?: number, episode?: number, embedUrl?: string, channelName?: string) => void;
   onProfileUpdate?: () => void;
+  allChannels?: LiveChannel[];
 }
 
 
@@ -33,7 +35,8 @@ export function PlayerView({
   channelName,
   onBack,
   onPlay: onPlayProp,
-  onProfileUpdate
+  onProfileUpdate,
+  allChannels = LIVE_CHANNELS
 }: PlayerViewProps) {
   const [detail, setDetail] = useState<TMDBDetail | null>(null);
   const [currentSeason, setCurrentSeason] = useState(season);
@@ -50,6 +53,16 @@ export function PlayerView({
   // Block popup attempts from the page itself using window.open override
   useEffect(() => {
     const originalOpen = window.open;
+    
+    // Return a proxy that handles focus/close to prevent scripts from crashing
+    const emptyWindowProxy = new Proxy({}, {
+        get: (_target, prop) => {
+          if (prop === 'location') return { replace: () => {}, assign: () => {}, href: '' };
+          if (typeof prop === 'string' && ['focus', 'blur', 'close', 'postMessage'].includes(prop)) return () => {};
+          return null;
+        }
+      });
+
     // Override window.open to block unwanted popups
     (window as any).open = (url: string, ...args: any[]) => {
       // Allow only trusted internal calls (e.g., fullscreen), block everything else
@@ -57,10 +70,25 @@ export function PlayerView({
         return originalOpen.call(window, url, ...args);
       }
       console.warn('[WilStream] Blocked popup:', url);
-      return null;
+      return emptyWindowProxy;
     };
+
+    // Also intercept postMessage from iframes trying to trigger navigation
+    const handleMessage = (e: MessageEvent) => {
+      if (e.origin === window.location.origin) return;
+      if (e.data && typeof e.data === 'string') {
+        const data = e.data.toLowerCase();
+        if (data.includes('window.open') || data.includes('location.href')) {
+          console.warn('[WilStream] Blocked postMessage navigation attempt from iframe:', e.origin);
+          e.stopImmediatePropagation();
+        }
+      }
+    };
+    window.addEventListener('message', handleMessage, true);
+
     return () => {
       (window as any).open = originalOpen;
+      window.removeEventListener('message', handleMessage, true);
     };
   }, []);
 
@@ -91,9 +119,9 @@ export function PlayerView({
   }, []);
 
 
-  const currentChannel = mediaType === 'live' ? LIVE_CHANNELS.find(ch => ch.name === channelName) : null;
-  const currentChannelIndex = currentChannel ? LIVE_CHANNELS.findIndex(ch => ch.channelNumber === currentChannel.channelNumber) : -1;
-  const similarChannels = currentChannel ? LIVE_CHANNELS.filter(ch => ch.category === currentChannel.category && ch.channelNumber !== currentChannel.channelNumber).slice(0, 6) : [];
+  const currentChannel = mediaType === 'live' ? allChannels.find(ch => ch.name === channelName) : null;
+  const currentChannelIndex = currentChannel ? allChannels.findIndex(ch => ch.name === currentChannel.name) : -1;
+  const similarChannels = currentChannel ? allChannels.filter(ch => ch.category === currentChannel.category && ch.name !== currentChannel.name).slice(0, 6) : [];
 
 
   useEffect(() => {
@@ -103,7 +131,7 @@ export function PlayerView({
       loadWatchlist();
     }
     updatePlayerUrl();
-  }, [tmdbId, mediaType]);
+  }, [tmdbId, mediaType, embedUrl, channelName]);
 
 
   useEffect(() => {
@@ -164,15 +192,15 @@ export function PlayerView({
 
   function handlePreviousChannel() {
     if (currentChannelIndex > 0) {
-      const prevChannel = LIVE_CHANNELS[currentChannelIndex - 1];
+      const prevChannel = allChannels[currentChannelIndex - 1];
       onPlayProp(0, 'live', undefined, undefined, prevChannel.embed, prevChannel.name);
     }
   }
 
 
   function handleNextChannel() {
-    if (currentChannelIndex < LIVE_CHANNELS.length - 1) {
-      const nextChannel = LIVE_CHANNELS[currentChannelIndex + 1];
+    if (currentChannelIndex < allChannels.length - 1) {
+      const nextChannel = allChannels[currentChannelIndex + 1];
       onPlayProp(0, 'live', undefined, undefined, nextChannel.embed, nextChannel.name);
     }
   }
@@ -230,10 +258,15 @@ export function PlayerView({
       }
 
       // Apply Brave-style ad blocking if enabled (skip for live TV)
-      const wrappedUrl = shouldBlockAds(profile, mediaType)
-        ? createInjectedIframeContent(finalUrl)
-        : finalUrl;
-      setPlayerUrl(wrappedUrl);
+      let finalPlayerUrl = finalUrl;
+      const needsAdBlock = shouldBlockAds(profile, mediaType, finalUrl);
+      if (needsAdBlock) {
+        // Use createInjectedIframeContent which wraps the player in our anti-popup page
+        // This is loaded via srcdoc on the iframe, so our JS runs as the iframe's top window
+        finalPlayerUrl = createInjectedIframeContent(finalUrl);
+      }
+
+      setPlayerUrl(finalPlayerUrl);
       setIsPlayerLoading(false);
     }
   }
@@ -367,14 +400,33 @@ export function PlayerView({
                 boxShadow: '0 0 20px #1a73e8aa'
               }}
             >
-              <iframe
-                src={playerUrl}
-                width="100%"
-                height="100%"
-                style={{ border: 0, display: 'block' }}
-                allowFullScreen
-                title={`Live TV - ${channelName}`}
-              />
+              {isHlsStream(playerUrl) ? (
+                <div className="w-full h-full relative">
+                  <video
+                    id="live-video-player"
+                    className="w-full h-full"
+                    controls
+                    autoPlay
+                    playsInline
+                  />
+                  <HlsLoader
+                    videoId="live-video-player"
+                    source={playerUrl}
+                    proxySource={`${CONFIG.BACKEND_URL}/api/proxy/?url=${encodeURIComponent(playerUrl)}`}
+                    key={playerUrl}
+                  />
+                </div>
+              ) : (
+                <iframe
+                  src={playerUrl}
+                  width="100%"
+                  height="100%"
+                  style={{ border: 0, display: 'block' }}
+                  allowFullScreen
+                  title={`Live TV - ${channelName}`}
+                  referrerPolicy="no-referrer"
+                />
+              )}
             </div>
           ) : (
             <div className="bg-black rounded-lg overflow-hidden mb-6 sm:mb-8 shadow-2xl relative" style={{ minHeight: '300px', height: '60vh' }}>
@@ -385,9 +437,17 @@ export function PlayerView({
                 height="100%"
                 style={{ border: 0 }}
                 allowFullScreen
-                // When ad blocking is enabled, we need scripts to inject the ad blocker
-                // Safe mode + ad blocking both need scripts for their functionality
-                sandbox={profile.safe_mode || shouldBlockAds(profile, mediaType) ? "allow-forms allow-scripts allow-same-origin allow-presentation allow-popups" : undefined}
+                allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+                referrerPolicy="no-referrer"
+                // The iframe sandbox is the browser-native popup blocker:
+                // ✅ allow-scripts       — player JS must run
+                // ✅ allow-same-origin   — needed for location.replace() in injector page + DRM APIs
+                // ✅ allow-forms         — some players use forms for auth
+                // ✅ allow-presentation  — fullscreen
+                // ✅ allow-pointer-lock  — fullscreen mouse lock
+                // ❌ allow-popups        — OMITTED: this is what blocks popup windows
+                // ❌ allow-top-navigation — OMITTED: prevents page hijacking
+                sandbox={shouldBlockAds(profile, mediaType) ? "allow-forms allow-scripts allow-same-origin allow-presentation allow-pointer-lock" : undefined}
               />
               {/* Smart click guard: absorbs the invisible ad layers from the iframe but allows bottom controls to be clicked */}
               {shouldBlockAds(profile, mediaType) && typeof window !== 'undefined' && (
@@ -443,9 +503,9 @@ export function PlayerView({
                   {watchlist.includes(currentChannel.name) ? <Check className="w-5 h-5 sm:w-6 sm:h-6 lg:w-7 lg:h-7" /> : <Plus className="w-5 h-5 sm:w-6 sm:h-6 lg:w-7 lg:h-7" />}
                   <span className="hidden sm:inline">{watchlist.includes(currentChannel.name) ? t('inLibrary') : t('addToLibrary')}</span>
                 </button>
-                <button
+                 <button
                   onClick={handleNextChannel}
-                  disabled={currentChannelIndex === LIVE_CHANNELS.length - 1}
+                  disabled={currentChannelIndex === allChannels.length - 1}
                   className={`w-full sm:w-auto px-6 sm:px-8 py-3 sm:py-4 text-base sm:text-lg lg:text-xl ${effectiveTheme === 'dark' ? 'bg-gray-800 hover:bg-gray-700 disabled:bg-gray-900 disabled:text-gray-600' : 'bg-gray-200 hover:bg-gray-300 disabled:bg-gray-100 disabled:text-gray-400'} rounded-lg font-medium transition-colors flex items-center justify-center gap-2 sm:gap-3`}
                 >
                   <span className="hidden sm:inline">Next Channel</span>
@@ -459,9 +519,9 @@ export function PlayerView({
                 <div>
                   <h3 className={`text-2xl sm:text-3xl lg:text-4xl font-bold mb-4 sm:mb-6 ${textClass}`}>Similar Channels</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-6">
-                    {similarChannels.map((channel) => (
+                     {similarChannels.map((channel, idx) => (
                       <button
-                        key={channel.channelNumber}
+                        key={`${channel.name}-${idx}`}
                         onClick={() => handlePlayChannel(channel)}
                         className={`group ${effectiveTheme === 'dark' ? 'bg-gray-900 hover:bg-gray-800' : 'bg-white hover:bg-gray-50 border border-gray-200'} rounded-lg p-3 sm:p-6 transition-all hover:ring-2 hover:ring-blue-500`}
                       >
@@ -563,3 +623,79 @@ export function PlayerView({
 }
 
 
+function HlsLoader({ videoId, source, proxySource }: { videoId: string; source: string; proxySource?: string }) {
+  useEffect(() => {
+    let hls: any;
+
+    async function init() {
+      const video = document.getElementById(videoId) as HTMLVideoElement;
+      if (!video) return;
+
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+
+      const loadHlsScript = () => new Promise<void>((resolve) => {
+        if ((window as any).Hls) { resolve(); return; }
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest';
+        script.onload = () => resolve();
+        document.head.appendChild(script);
+      });
+
+      await loadHlsScript();
+      const Hls = (window as any).Hls;
+
+      // Try proxy first (avoids CORS), fallback to direct URL
+      const sourcesToTry = proxySource ? [proxySource, source] : [source];
+
+      const trySource = (src: string, isLast: boolean) => {
+        if (hls) { hls.destroy(); hls = null; }
+
+        if (Hls.isSupported()) {
+          hls = new Hls({ 
+            enableWorker: true, 
+            lowLatencyMode: true, 
+            backBufferLength: 60,
+            manifestLoadingTimeOut: 45000,
+            manifestLoadingMaxRetry: 10,
+            manifestLoadingRetryDelay: 2000,
+            levelLoadingTimeOut: 45000,
+            fragLoadingTimeOut: 45000,
+            fragLoadingMaxRetry: 10,
+            startLevel: -1
+          });
+          hls.loadSource(src);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            video.play().catch(() => console.warn('[WilStream PlayerView] Autoplay blocked'));
+          });
+          hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
+            if (data.fatal) {
+              if (!isLast && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                console.warn('[WilStream PlayerView] Proxy failed, trying direct...');
+                trySource(source, true);
+              } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                hls.recoverMediaError();
+              } else {
+                console.error('[WilStream PlayerView] Fatal HLS error:', data);
+                hls.destroy();
+              }
+            }
+          });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = src;
+          video.play().catch(() => {});
+        }
+      };
+
+      trySource(sourcesToTry[0], sourcesToTry.length === 1);
+    }
+
+    init();
+
+    return () => { if (hls) hls.destroy(); };
+  }, [source, proxySource, videoId]);
+
+  return null;
+}

@@ -12,6 +12,8 @@ import { StartupAnimation } from './components/StartupAnimation';
 import { getProfiles } from './lib/storage';
 import { useTranslation } from './context/LanguageContext';
 import { getLanguage } from './lib/translations';
+import { fetchLiveChannels } from './lib/iptvProvider';
+import { LiveChannel } from './types';
 
 
 type View =
@@ -37,15 +39,40 @@ function App() {
   const [previousView, setPreviousView] = useState<View | null>(null);
   const currentViewRef = useRef(currentView);
   const previousViewRef = useRef(previousView);
+  const [showStartup, setShowStartup] = useState(true);
 
   useEffect(() => {
     currentViewRef.current = currentView;
     previousViewRef.current = previousView;
   }, [currentView, previousView]);
-  const [showStartup, setShowStartup] = useState(() => {
-    const hasSeenStartup = sessionStorage.getItem('WilStream_startup_seen');
-    return !hasSeenStartup;
-  });
+
+  const [channels, setChannels] = useState<LiveChannel[]>([]);
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [channelError, setChannelError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (currentProfile) {
+      loadChannels();
+    }
+  }, [currentProfile]);
+
+  async function loadChannels() {
+    setChannelsLoading(true);
+    setChannelError(null);
+    try {
+      const result = await fetchLiveChannels();
+      setChannels(result.channels);
+      if (result.error) {
+        setChannelError(result.error);
+        console.warn('[WilStream] IPTV provider error:', result.error);
+      }
+    } catch (e) {
+      console.error('[WilStream] Global channel fetch failed', e);
+      setChannelError('No se pudo conectar al servidor de canales.');
+    } finally {
+      setChannelsLoading(false);
+    }
+  }
 
 
   useEffect(() => {
@@ -93,7 +120,7 @@ function App() {
 
 
   useEffect(() => {
-    console.log('--- WILSTREAM v1.8.2 LOADED ---');
+    console.log('--- WILSTREAM v1.9.0 RELOADED ---');
     if (!showStartup) {
       // alert('DEBUG: WILSTREAM v1.5.0 LOADED');
       sessionStorage.setItem('WilStream_startup_seen', 'true');
@@ -240,6 +267,10 @@ function App() {
         profile={currentProfile}
         onBack={handleBack}
         onPlay={handlePlay}
+        channels={channels}
+        isLoading={channelsLoading}
+        onRefresh={loadChannels}
+        channelError={channelError}
       />
     );
   }
@@ -272,6 +303,7 @@ function App() {
         onBack={handleBack}
         onPlay={handlePlay}
         onProfileUpdate={handleProfileUpdate}
+        allChannels={channels}
       />
     );
   }
